@@ -308,7 +308,7 @@ router.post('/', async (req, res) => {
                         hora_salida, hora_llegada
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
                     [
-                        idReserva_o_id,                    // $1  - id de reserva
+                        idReserva,                    // $1  - id de reserva
                         sanitizeString(s.tipo_item),       // $2
                         sanitizeDecimal(s.costo_neto_operador, 0), // $3
                         sanitizeDecimal(s.venta_bruta_cliente, 0),  // $4
@@ -496,7 +496,7 @@ router.put('/:id', async (req, res) => {
                         hora_salida, hora_llegada
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
                     [
-                        idReserva_o_id,                    // $1  - id de reserva
+                        id,                    // $1  - id de reserva
                         sanitizeString(s.tipo_item),       // $2
                         sanitizeDecimal(s.costo_neto_operador, 0), // $3
                         sanitizeDecimal(s.venta_bruta_cliente, 0),  // $4
