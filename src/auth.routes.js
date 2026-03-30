@@ -6,7 +6,7 @@ const router = express.Router();
 const pool = require('./db');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('./Authmiddleware');
-
+//aaa
 // RUTA DE LOGIN — Genera JWT real
 router.post('/login', async (req, res) => {
     try {
