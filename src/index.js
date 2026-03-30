@@ -129,6 +129,6 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('🔥 CRÍTICO - Promesa rechazada no manejada:', reason);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor Traveris escuchando en puerto ${PORT}`);
 });
