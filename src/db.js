@@ -14,6 +14,11 @@ const pool = new Pool({
   ssl: isProduction ? { rejectUnauthorized: false } : false 
 });
 
+// Forzar search_path para NeonDB (que por defecto lo tira a un path inalcanzable)
+pool.on('connect', client => {
+  client.query('SET search_path TO public');
+});
+
 // Prueba de conexión inmediata al arrancar
 pool.connect((err, client, release) => {
   if (err) {
