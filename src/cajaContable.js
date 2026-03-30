@@ -13,7 +13,7 @@ const { sqlCaseMonto, sqlCaseMontoReal } = require('./constantes');
 router.post('/registrar', async (req, res) => {
     const { id_reserva, monto, moneda, tipo_movimiento, metodo_pago, observaciones, empresa_nombre } = req.body;
 
-    if (!monto || monto <= 0) return res.status(400).json({ error: "El monto debe ser mayor a 0" });
+    if (monto === undefined || monto === null) return res.status(400).json({ error: "El monto es requerido" });
     if (!moneda) return res.status(400).json({ error: "La moneda es requerida" });
     if (!tipo_movimiento) return res.status(400).json({ error: "El tipo de movimiento es requerido" });
     if (!empresa_nombre) return res.status(400).json({ error: "La empresa es requerida" });
@@ -44,7 +44,7 @@ router.post('/pagar-tarjeta', async (req, res) => {
     try {
         const { monto, moneda, metodo_pago_real, observaciones, empresa_nombre } = req.body;
 
-        if (!monto || monto <= 0) return res.status(400).json({ error: "El monto debe ser mayor a 0" });
+        if (monto === undefined || monto === null) return res.status(400).json({ error: "El monto es requerido" });
         if (!moneda) return res.status(400).json({ error: "La moneda es requerida" });
         if (!metodo_pago_real) return res.status(400).json({ error: "Debe indicar con qué medio paga la tarjeta" });
         if (!empresa_nombre) return res.status(400).json({ error: "La empresa es requerida" });
@@ -189,9 +189,10 @@ router.get('/cierre-mensual/:empresa', async (req, res) => {
         const detalle = await pool.query(`
             SELECT m.*, (${caseMonto}) as monto_real, r.destino_final, c.nombre_completo as nombre_titular
             FROM movimientos_caja m
-            LEFT JOIN reservas r ON m.id_reserva = r.id
+            LEFT JOIN reservas r ON m.id_reserva = r.id AND COALESCE(r.estado_eliminado, FALSE) = FALSE
             LEFT JOIN clientes c ON r.id_titular = c.id
             WHERE m.empresa_nombre = $1 AND EXTRACT(MONTH FROM m.fecha_pago) = $2 AND EXTRACT(YEAR FROM m.fecha_pago) = $3
+            AND (m.id_reserva IS NULL OR COALESCE(r.estado_eliminado, FALSE) = FALSE)
             ORDER BY m.fecha_pago ASC
         `, [empresa, mesActual, anioActual]);
 

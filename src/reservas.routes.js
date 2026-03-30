@@ -188,21 +188,21 @@ router.get('/dashboard/stats/:empresa', async (req, res) => {
                 COALESCE(SUM(total_venta_final_usd) - 
                     COALESCE((SELECT SUM(monto) FROM movimientos_caja mc 
                         WHERE mc.tipo_movimiento = 'PAGO_CLIENTE' 
-                        AND mc.id_reserva IN (SELECT id FROM reservas WHERE empresa_nombre = $1)
+                        AND mc.id_reserva IN (SELECT id FROM reservas WHERE empresa_nombre = $1 AND COALESCE(estado_eliminado, FALSE) = FALSE)
                     ), 0)
                 , 0) as "saldoPendienteGlobal",
                 
                 COALESCE(SUM(costo_total_operador_usd) - 
                     COALESCE((SELECT SUM(monto) FROM movimientos_caja mc 
                         WHERE mc.tipo_movimiento = 'PAGO_PROVEEDOR' 
-                        AND mc.id_reserva IN (SELECT id FROM reservas WHERE empresa_nombre = $1)
+                        AND mc.id_reserva IN (SELECT id FROM reservas WHERE empresa_nombre = $1 AND COALESCE(estado_eliminado, FALSE) = FALSE)
                     ), 0)
                 , 0) as "deudaProveedoresGlobal",
                 
-                COUNT(*) FILTER (WHERE estado = 'ABIERTO') as "legajosActivos",
-                COUNT(*) as "totalLegajos"
+                COUNT(*) FILTER (WHERE estado = 'ABIERTO' AND COALESCE(estado_eliminado, FALSE) = FALSE) as "legajosActivos",
+                COUNT(*) FILTER (WHERE COALESCE(estado_eliminado, FALSE) = FALSE) as "totalLegajos"
             FROM reservas 
-            WHERE empresa_nombre = $1
+            WHERE empresa_nombre = $1 AND COALESCE(estado_eliminado, FALSE) = FALSE
         `;
 
         const result = await pool.query(query, [empresa]);
@@ -257,7 +257,8 @@ router.post('/', async (req, res) => {
             total_venta_final_usd: sanitizeDecimal(total_venta_final_usd, 0),
             costo_total_operador_usd: sanitizeDecimal(costo_total_operador_usd, 0),
             observaciones_internas: sanitizeString(observaciones_internas),
-            fecha_limite_pago: sanitizeDate(fecha_limite_pago)
+            fecha_limite_pago: sanitizeDate(fecha_limite_pago),
+            moneda_pago: sanitizeString(moneda_pago) || 'USD'
         };
 
         // Validación mínima: titular obligatorio
@@ -271,8 +272,8 @@ router.post('/', async (req, res) => {
                 id_titular, destino_final, fecha_viaje_salida, fecha_viaje_regreso,
                 cotizacion_dolar, operador_mayorista, nro_expediente_operador, empresa_nombre,
                 gastos_administrativos_usd, bonificacion_descuento_usd, total_venta_final_usd,
-                costo_total_operador_usd, observaciones_internas, estado, fecha_limite_pago
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ABIERTO',$14) RETURNING id`,
+                costo_total_operador_usd, observaciones_internas, estado, fecha_limite_pago, moneda_pago
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'ABIERTO',$14, $15) RETURNING id`,
             [
                 safeReserva.id_titular,
                 safeReserva.destino_final,
@@ -287,7 +288,8 @@ router.post('/', async (req, res) => {
                 safeReserva.total_venta_final_usd,
                 safeReserva.costo_total_operador_usd,
                 safeReserva.observaciones_internas,
-                safeReserva.fecha_limite_pago
+                safeReserva.fecha_limite_pago,
+                safeReserva.moneda_pago
             ]
         );
         const idReserva = resReserva.rows[0].id;
@@ -436,7 +438,7 @@ router.put('/:id', async (req, res) => {
             cotizacion_dolar, operador_mayorista, nro_expediente_operador,
             gastos_administrativos_usd, bonificacion_descuento_usd, total_venta_final_usd,
             costo_total_operador_usd, observaciones_internas, servicios, acompaniantes,
-            fecha_limite_pago
+            fecha_limite_pago, moneda_pago
         } = req.body;
 
         // --- SANITIZAR datos principales ---
@@ -445,8 +447,9 @@ router.put('/:id', async (req, res) => {
                 id_titular=$1, destino_final=$2, fecha_viaje_salida=$3, fecha_viaje_regreso=$4,
                 cotizacion_dolar=$5, operador_mayorista=$6, nro_expediente_operador=$7,
                 gastos_administrativos_usd=$8, bonificacion_descuento_usd=$9, total_venta_final_usd=$10,
-                costo_total_operador_usd=$11, observaciones_internas=$12, fecha_limite_pago=$13
-            WHERE id = $14`,
+                costo_total_operador_usd=$11, observaciones_internas=$12, fecha_limite_pago=$13,
+                moneda_pago=$14
+            WHERE id = $15`,
             [
                 sanitizeInteger(id_titular),
                 sanitizeString(destino_final),
@@ -461,6 +464,7 @@ router.put('/:id', async (req, res) => {
                 sanitizeDecimal(costo_total_operador_usd, 0),
                 sanitizeString(observaciones_internas),
                 sanitizeDate(fecha_limite_pago),
+                sanitizeString(moneda_pago) || 'USD',
                 id
             ]
         );
@@ -496,7 +500,7 @@ router.put('/:id', async (req, res) => {
                         hora_salida, hora_llegada
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
                     [
-                        idReserva_o_id,                    // $1  - id de reserva
+                        id,                                // $1  - id de reserva
                         sanitizeString(s.tipo_item),       // $2
                         sanitizeDecimal(s.costo_neto_operador, 0), // $3
                         sanitizeDecimal(s.venta_bruta_cliente, 0),  // $4
@@ -541,17 +545,18 @@ router.put('/:id', async (req, res) => {
 });
 
 // ============================================================
-// ELIMINAR RESERVA
+// ELIMINAR RESERVA (SOFT DELETE)
 // ============================================================
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await pool.query('DELETE FROM reservas WHERE id = $1', [id]);
+        // Soft delete: actualizar bandera
+        const result = await pool.query('UPDATE reservas SET estado_eliminado = TRUE, estado = $1 WHERE id = $2 RETURNING *', ['ELIMINADO', id]);
         if (result.rowCount === 0) return res.status(404).json({ error: "Reserva no encontrada" });
-        res.json({ message: "Legajo y todos sus datos asociados eliminados correctamente" });
+        res.json({ message: "Legajo movido a papelera de reciclaje correctamente." });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: "Error en el borrado automático" });
+        res.status(500).json({ error: "Error en el borrado" });
     }
 });
 
@@ -565,7 +570,7 @@ router.get('/agencia/:empresa', async (req, res) => {
             SELECT r.*, c.nombre_completo as nombre_titular,
                 (COALESCE(r.precio_vuelo_usd, 0) + COALESCE(r.precio_hotel_usd, 0) + COALESCE(r.precio_excursiones_usd, 0) + COALESCE(r.precio_otros_servicios_usd, 0) + COALESCE(r.gastos_administrativos_usd, 0) - COALESCE(r.bonificacion_descuento_usd, 0) - COALESCE((SELECT SUM(monto) FROM movimientos_caja WHERE id_reserva = r.id AND moneda = 'USD' AND tipo_movimiento = 'PAGO_CLIENTE'), 0) + COALESCE((SELECT SUM(monto) FROM movimientos_caja WHERE id_reserva = r.id AND moneda = 'USD' AND tipo_movimiento = 'PAGO_PROVEEDOR'), 0)
                 ) as saldo_real
-            FROM reservas r JOIN clientes c ON r.id_titular = c.id WHERE r.empresa_nombre = $1 ORDER BY r.id DESC`, [empresa]);
+            FROM reservas r JOIN clientes c ON r.id_titular = c.id WHERE r.empresa_nombre = $1 AND COALESCE(r.estado_eliminado, FALSE) = FALSE ORDER BY r.id DESC`, [empresa]);
         res.json(resultado.rows);
     } catch (err) {
         res.status(500).json({ error: "Error al obtener saldos" });
@@ -604,7 +609,7 @@ router.get('/cliente/:idCliente', async (req, res) => {
         const resultado = await pool.query(`
             SELECT r.*, c.nombre_completo as nombre_titular
             FROM reservas r JOIN clientes c ON r.id_titular = c.id
-            WHERE r.id_titular = $1 ORDER BY r.id DESC`, [idCliente]);
+            WHERE r.id_titular = $1 AND COALESCE(r.estado_eliminado, FALSE) = FALSE ORDER BY r.id DESC`, [idCliente]);
         res.json(resultado.rows);
     } catch (err) {
         res.status(500).json({ error: "Error al buscar reservas del cliente" });
@@ -628,6 +633,7 @@ router.get('/radar/vencimientos/:empresa', async (req, res) => {
             JOIN clientes c ON r.id_titular = c.id
             WHERE r.empresa_nombre = $1 
             AND r.estado = 'ABIERTO'
+            AND COALESCE(r.estado_eliminado, FALSE) = FALSE
             AND COALESCE(r.fecha_limite_pago, r.fecha_viaje_salida - INTERVAL '30 days') <= CURRENT_DATE
             AND (COALESCE(r.total_venta_final_usd, 0) - 
                  COALESCE((SELECT SUM(monto) FROM movimientos_caja WHERE id_reserva = r.id AND tipo_movimiento = 'PAGO_CLIENTE'), 0)
@@ -655,10 +661,14 @@ function generarHTMLVoucher(reserva, servicios, pasajeros, empresaNombre) {
         if (s.check_out) detalles.push(`Check-out: ${new Date(s.check_out).toLocaleDateString('es-AR')}`);
         if (s.origen && s.destino) detalles.push(`Ruta: ${s.origen} → ${s.destino}`);
         if (s.nro_vuelo) detalles.push(`Vuelo: ${s.nro_vuelo}`);
+        if (s.hora_salida) detalles.push(`Salida: ${s.hora_salida}`);
+        if (s.hora_llegada) detalles.push(`Llegada: ${s.hora_llegada}`);
         if (s.pnr) detalles.push(`PNR: ${s.pnr}`);
         if (s.regimen) detalles.push(`Régimen: ${s.regimen}`);
         if (s.plan_asistencia) detalles.push(`Plan: ${s.plan_asistencia}`);
         if (s.nro_poliza) detalles.push(`Póliza: ${s.nro_poliza}`);
+        if (s.crucero_cabina) detalles.push(`Cabina: ${s.crucero_cabina}`);
+        if (s.excursion_fecha) detalles.push(`Fecha: ${new Date(s.excursion_fecha).toLocaleDateString('es-AR')}`);
         if (s.servicio_descripcion) detalles.push(s.servicio_descripcion);
 
         serviciosHTML += `
@@ -761,8 +771,8 @@ function generarHTMLCotizacion(reserva, servicios, empresaNombre) {
     if (gastos > 0) {
         serviciosHTML += `
             <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;"><span style="background: #f1f5f9; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">ADMIN</span></td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">Gastos administrativos</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;"><span style="background: #f1f5f9; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">FEE</span></td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">Gestión Administrativa</td>
                 <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold;">US$ ${gastos.toFixed(2)}</td>
             </tr>`;
     }
@@ -770,20 +780,9 @@ function generarHTMLCotizacion(reserva, servicios, empresaNombre) {
         serviciosHTML += `
             <tr style="color: #16a34a;">
                 <td style="padding: 10px; border-bottom: 1px solid #eee;"><span style="background: #f0fdf4; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">DESC</span></td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee;">Bonificación / Descuento</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee;">Bonificación Exclusiva</td>
                 <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold;">- US$ ${descuento.toFixed(2)}</td>
             </tr>`;
-    }
-
-    let equivalenteARS = '';
-    if (cotizacion > 0) {
-        equivalenteARS = `
-            <div style="background: #f8fafc; border-radius: 8px; padding: 15px; margin-top: 15px; border: 1px solid #e2e8f0;">
-                <p style="margin: 0; font-size: 13px; color: #475569;">
-                    <strong>Cotización de referencia:</strong> 1 USD = $ ${cotizacion.toFixed(2)} ARS<br>
-                    <strong>Equivalente en pesos:</strong> <span style="color: #2563eb; font-weight: bold;">$ ${(totalFinal * cotizacion).toFixed(2)} ARS</span>
-                </p>
-            </div>`;
     }
 
     return `
@@ -808,26 +807,26 @@ function generarHTMLCotizacion(reserva, servicios, empresaNombre) {
                     </tr>
                 </table>
             </div>
-            <h3 style="color: #1e293b; border-bottom: 2px solid #059669; padding-bottom: 8px;">Desglose de Inversión</h3>
+            <h3 style="color: #1e293b; border-bottom: 2px solid #059669; padding-bottom: 8px;">Resumen de Servicios</h3>
             <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
                 <tr style="background: #f1f5f9;">
                     <th style="padding: 10px; text-align: left; font-size: 12px;">CONCEPTO</th>
                     <th style="padding: 10px; text-align: left; font-size: 12px;">DETALLE</th>
-                    <th style="padding: 10px; text-align: right; font-size: 12px;">VALOR (USD)</th>
+                    <th style="padding: 10px; text-align: right; font-size: 12px;">VALOR</th>
                 </tr>
                 ${serviciosHTML}
                 <tr style="border-top: 3px solid #1e293b;">
-                    <td colspan="2" style="padding: 15px; font-size: 18px; font-weight: bold;">INVERSIÓN TOTAL</td>
+                    <td colspan="2" style="padding: 15px; font-size: 18px; font-weight: bold;">TOTAL GENERAL</td>
                     <td style="padding: 15px; text-align: right; font-size: 18px; font-weight: bold; color: #2563eb;">US$ ${totalFinal.toFixed(2)}</td>
                 </tr>
             </table>
-            ${equivalenteARS}
+            
             <div style="margin-top: 25px; padding: 15px; background: #fffbeb; border-radius: 8px; border: 1px solid #fde68a; text-align: center;">
-                <p style="margin: 0; font-size: 13px; color: #92400e;"><strong>Cotización sujeta a disponibilidad y tipo de cambio vigente.</strong><br>Validez: 5 días hábiles desde la fecha de emisión.</p>
+                <p style="margin: 0; font-size: 13px; color: #92400e;"><strong>Cotización sujeta a disponibilidad y tipo de cambio vigente al momento del pago.</strong><br>Validez: 5 días hábiles desde la fecha de emisión.</p>
             </div>
         </div>
         <div style="background: #f1f5f9; padding: 15px; text-align: center; border-top: 1px solid #e2e8f0;">
-            <p style="margin: 0; font-size: 12px; color: #64748b;">${empresaNombre} — Agencia de Viajes y Turismo</p>
+            <p style="margin: 0; font-size: 12px; color: #64748b;">${empresaNombre} — Operador y Agencia de Viajes</p>
         </div>
     </div>`;
 }

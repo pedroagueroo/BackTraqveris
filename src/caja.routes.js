@@ -116,18 +116,18 @@ router.get('/ultimos/:empresa', async (req, res) => {
 // 4. REGISTRAR PAGO (ruta legacy para compatibilidad)
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
-    const { id_reserva, monto, moneda, tipo_movimiento, empresa_nombre } = req.body;
+    const { id_reserva, monto, moneda, tipo_movimiento, empresa_nombre, banco, numero_tarjeta, cuotas, detalle_transaccion } = req.body;
     
-    if (!monto || monto <= 0) {
-        return res.status(400).json({ error: "El monto debe ser mayor a 0" });
+    if (monto === undefined || monto === null) {
+        return res.status(400).json({ error: "El monto es obligatorio" });
     }
     
     try {
         const nuevo = await pool.query(
             `INSERT INTO movimientos_caja 
-             (id_reserva, monto, moneda, tipo_movimiento, empresa_nombre, fecha_pago) 
-             VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) RETURNING *`, 
-            [id_reserva, monto, moneda, tipo_movimiento, empresa_nombre]
+             (id_reserva, monto, moneda, tipo_movimiento, empresa_nombre, fecha_pago, banco, numero_tarjeta, cuotas, detalle_transaccion) 
+             VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, $6, $7, $8, $9) RETURNING *`, 
+            [id_reserva, monto, moneda, tipo_movimiento, empresa_nombre, banco, numero_tarjeta, cuotas || 1, detalle_transaccion]
         );
         res.json(nuevo.rows[0]);
     } catch (err) { 
