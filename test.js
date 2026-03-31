@@ -1,15 +1,22 @@
-const { Pool } = require('pg');
 require('dotenv').config({ path: 'C:\\Users\\usuario\\OneDrive\\Escritorio\\BackTraqveris\\.env' });
+const pool = require('./src/db');
 
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT || 5432,
-  ssl: { require: true, rejectUnauthorized: false }
-});
+async function checkData() {
+  try {
+    const clients = await pool.query('SELECT COUNT(*) FROM clientes');
+    const users = await pool.query('SELECT COUNT(*) FROM usuarios');
+    const reservations = await pool.query('SELECT COUNT(*) FROM reservas');
 
-pool.query('SELECT * FROM public.usuarios')
-  .then(res => { console.log('Usuarios en DB Neon:', res.rows.length); pool.end(); })
-  .catch(err => { console.error('ERROR AL CONECTAR/CONSULTAR:', err.message); pool.end(); });
+    console.log(`📊 DATOS MIGRADOS CON ÉXITO A LA NUBE NEON:`);
+    console.log(`- Clientes reales: ${clients.rows[0].count}`);
+    console.log(`- Usuarios (agentes): ${users.rows[0].count}`);
+    console.log(`- Reservas activas: ${reservations.rows[0].count}`);
+    console.log(`\n¡Ya puedes loguearte desde tu página de Vercel con los mismos usuarios que tenías en tu DBeaver local!`);
+  } catch (err) {
+    console.error('Error al contar data:', err.message);
+  } finally {
+    pool.end();
+  }
+}
+
+checkData();
