@@ -21,6 +21,7 @@ const authRoutes = require('./auth.routes');
 const cajaContableRoutes = require('./cajaContable');
 const importClientesRoutes = require('./importClientes.routes');
 const recibosRoutes = require('./recibos.routes');
+const proveedoresRoutes = require('./proveedores.routes');
 
 const app = express();
 
@@ -89,6 +90,7 @@ app.use('/api/reservas', verificarToken, reservasRoutes);
 app.use('/api/caja', verificarToken, cajasRoutes);
 app.use('/api/caja-contable', verificarToken, cajaContableRoutes);
 app.use('/api/import-clientes', verificarToken, importClientesRoutes);
+app.use('/api/proveedores', verificarToken, proveedoresRoutes);
 
 app.use('/api/recibos', recibosRoutes);
 

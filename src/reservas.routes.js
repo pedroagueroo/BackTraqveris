@@ -10,23 +10,55 @@ const transporter = require('./mailer');
 router.post('/:id/enviar-documento', async (req, res) => {
     try {
         const { id } = req.params;
-        const { destinatario, nombreCliente, tipoDoc, destino, adjuntarArchivos } = req.body;
+        const { destinatario, nombreCliente, tipoDoc, destino, adjuntarArchivos, pdfBase64 } = req.body;
 
         const mailOptions = {
-            from: '"Vicka Turismo" <aguerop47@gmail.com>',
+            from: `"${process.env.SMTP_FROM_NAME || 'Traveris Pro'}" <${process.env.SMTP_USER}>`,
             to: destinatario,
-            subject: `📄 Tu ${tipoDoc} de viaje a ${destino} - Vicka Turismo`,
+            subject: `📄 Tu ${tipoDoc} de viaje a ${destino} - ${process.env.SMTP_FROM_NAME || 'Traveris Pro'}`,
             html: `
-                <div style="font-family: Arial, sans-serif; color: #333;">
-                    <h2>¡Hola, ${nombreCliente}!</h2>
-                    <p>Esperamos que estés muy bien. Te adjuntamos tu <b>${tipoDoc}</b> correspondiente a tu próximo viaje a <b>${destino}</b>.</p>
-                    <p>Cualquier duda, estamos a tu disposición.</p>
-                    <br><hr>
-                    <p style="font-size: 0.8rem; color: #777;">Vicka Turismo - Agencia de Viajes y Turismo</p>
-                </div>`
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f4f7fa;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7fa;padding:30px 0;">
+<tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+  <tr><td style="background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);padding:30px 40px;text-align:center;">
+    <h1 style="color:#ffffff;font-size:22px;margin:0;letter-spacing:1px;">${process.env.SMTP_FROM_NAME || 'Traveris Pro'}</h1>
+    <p style="color:rgba(255,255,255,0.7);font-size:12px;margin:5px 0 0;text-transform:uppercase;letter-spacing:2px;">Agencia de Viajes y Turismo</p>
+  </td></tr>
+  <tr><td style="padding:35px 40px;">
+    <h2 style="color:#1a1a2e;font-size:20px;margin:0 0 15px;">¡Hola, ${nombreCliente}! ✈️</h2>
+    <p style="color:#555;font-size:15px;line-height:1.6;margin:0 0 20px;">Esperamos que estés muy bien. Te adjuntamos tu <strong style="color:#0f3460;">${tipoDoc}</strong> correspondiente a tu próximo viaje a <strong style="color:#e94560;">${destino}</strong>.</p>
+    <div style="background:#f0f4ff;border-left:4px solid #0f3460;padding:15px 20px;border-radius:0 8px 8px 0;margin:20px 0;">
+      <p style="margin:0;font-size:14px;color:#333;">📎 Encontrarás el documento adjunto en este email. Si no podés verlo, contactanos y te lo reenviamos.</p>
+    </div>
+    <p style="color:#555;font-size:15px;line-height:1.6;margin:20px 0 0;">Cualquier duda o consulta, estamos a tu disposición.</p>
+    <p style="color:#333;font-size:15px;font-weight:600;margin:15px 0 0;">¡Te deseamos un excelente viaje! 🌍</p>
+  </td></tr>
+  <tr><td style="background:#f8f9fa;padding:20px 40px;text-align:center;border-top:1px solid #eee;">
+    <p style="margin:0;font-size:12px;color:#999;">${process.env.SMTP_FROM_NAME || 'Traveris Pro'} — Agencia de Viajes y Turismo</p>
+    <p style="margin:5px 0 0;font-size:11px;color:#bbb;">Este email fue generado automáticamente. No responder a esta dirección.</p>
+  </td></tr>
+</table>
+</td></tr></table>
+</body></html>`
         };
 
         let archivosAdjuntosCount = 0;
+
+        if (pdfBase64) {
+             const buffer = Buffer.from(pdfBase64.split("base64,")[1] || pdfBase64, 'base64');
+             mailOptions.attachments = mailOptions.attachments || [];
+             mailOptions.attachments.push({
+                 filename: `${tipoDoc}_${nombreCliente.replace(/\s+/g,'_')}.pdf`,
+                 content: buffer,
+                 contentType: 'application/pdf'
+             });
+             archivosAdjuntosCount++;
+        }
+
         if (adjuntarArchivos) {
             // Buscar los archivos subidos para esta reserva
             const dbFiles = await pool.query('SELECT nombre_archivo, ruta_archivo FROM reserva_archivos WHERE id_reserva = $1', [id]);
@@ -47,26 +79,19 @@ router.post('/:id/enviar-documento', async (req, res) => {
     }
 });
 
-// --- CONFIGURACIÓN DE ARCHIVOS (MULTER) ---
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const dir = './uploads';
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-        cb(null, dir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
-});
-
-const upload = multer({ storage });
+// --- CONFIGURACIÓN DE ARCHIVOS (S3 + FALLBACK LOCAL) ---
+const { createS3Uploader, s3Config } = require('./s3.config');
+const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const upload = createS3Uploader('reservas');
 
 router.post('/:id/subir-archivo', upload.single('archivo'), async (req, res) => {
     try {
         const { id } = req.params;
-        const { filename, mimetype, path: filePath } = req.file;
+        const nombre = req.file.originalname || req.file.filename || req.file.key;
+        const ruta = req.file.location || req.file.path; // S3 usa 'location', local usa 'path'
+        const tipo = req.file.mimetype;
         const query = `INSERT INTO reserva_archivos (id_reserva, nombre_archivo, ruta_archivo, tipo_archivo) VALUES ($1, $2, $3, $4) RETURNING *`;
-        const result = await pool.query(query, [id, filename, filePath, mimetype]);
+        const result = await pool.query(query, [id, nombre, ruta, tipo]);
         res.json(result.rows[0]);
     } catch (err) {
         console.error(err);
@@ -89,8 +114,24 @@ router.delete('/archivo/:id', async (req, res) => {
         const { id } = req.params;
         const fileData = await pool.query('SELECT ruta_archivo FROM reserva_archivos WHERE id = $1', [id]);
         if (fileData.rows.length > 0) {
-            const path = fileData.rows[0].ruta_archivo;
-            if (fs.existsSync(path)) fs.unlinkSync(path);
+            const ruta = fileData.rows[0].ruta_archivo;
+            if (ruta && ruta.startsWith('http')) {
+                // S3: extraer key de la URL
+                try {
+                    const url = new URL(ruta);
+                    const key = url.pathname.substring(1); // remove leading /
+                    await s3Config.send(new DeleteObjectCommand({
+                        Bucket: process.env.AWS_S3_BUCKET,
+                        Key: key
+                    }));
+                } catch (s3Err) {
+                    console.warn("No se pudo borrar de S3:", s3Err.message);
+                }
+            } else if (ruta) {
+                // Local fallback
+                const fs = require('fs');
+                if (fs.existsSync(ruta)) fs.unlinkSync(ruta);
+            }
         }
         await pool.query('DELETE FROM reserva_archivos WHERE id = $1', [id]);
         res.json({ mensaje: "Archivo eliminado" });
@@ -299,8 +340,22 @@ router.post('/', async (req, res) => {
             for (let s of servicios) {
                 const d = s.detalles || {};
                 await client.query(
-                    `INSERT INTO reserva_servicios_detallados (id_reserva, tipo_item, costo_neto_operador, venta_bruta_cliente, hotel_nombre, ciudad, check_in, check_out, regimen, aerolinea, nro_vuelo, origen, destino, pnr, crucero_nombre, crucero_cabina, crucero_itinerario, nombre_item, servicio_descripcion, excursion_fecha, hora_salida, hora_llegada, operador_mayorista, nro_expediente, observaciones_servicio) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
-                    [idReserva, s.tipo_item, s.costo_neto_operador || 0, s.venta_bruta_cliente || 0, d.hotel_nombre || null, d.ciudad || null, d.check_in || null, d.check_out || null, d.regimen || null, d.aerolinea || null, d.nro_vuelo || null, d.origen || null, d.destino || null, d.pnr || null, d.crucero_nombre || null, d.crucero_cabina || null, d.crucero_itinerario || null, d.nombre_servicio || null, d.servicio_descripcion || null, d.fecha || null, d.hora_salida || null, d.hora_llegada || null, d.operador_mayorista || null, d.nro_expediente || null, d.observaciones || null]
+                    `INSERT INTO reserva_servicios_detallados (
+                        id_reserva, tipo_item, costo_neto_operador, venta_bruta_cliente, 
+                        moneda_costo, moneda_venta, metodo_pago, id_proveedor,
+                        hotel_nombre, ciudad, check_in, check_out, regimen, aerolinea, nro_vuelo, origen, destino, pnr, 
+                        crucero_nombre, crucero_cabina, crucero_itinerario, nombre_item, servicio_descripcion, 
+                        excursion_fecha, hora_salida, hora_llegada, operador_mayorista, nro_expediente, observaciones_servicio
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
+                    [
+                        idReserva, s.tipo_item, s.costo_neto_operador || 0, s.venta_bruta_cliente || 0,
+                        s.moneda_costo || 'USD', s.moneda_venta || 'USD', s.metodo_pago || 'EFECTIVO', s.id_proveedor || null,
+                        d.hotel_nombre || null, d.ciudad || null, d.check_in || null, d.check_out || null, d.regimen || null, 
+                        d.aerolinea || null, d.nro_vuelo || null, d.origen || null, d.destino || null, d.pnr || null, 
+                        d.crucero_nombre || null, d.crucero_cabina || null, d.crucero_itinerario || null, 
+                        d.nombre_servicio || null, d.servicio_descripcion || null, d.fecha || null, 
+                        d.hora_salida || null, d.hora_llegada || null, d.operador_mayorista || null, d.nro_expediente || null, d.observaciones || null
+                    ]
                 );
             }
         }
@@ -337,6 +392,10 @@ router.get('/completa/:id', async (req, res) => {
             tipo_item: s.tipo_item,
             costo_neto_operador: s.costo_neto_operador,
             venta_bruta_cliente: s.venta_bruta_cliente,
+            moneda_costo: s.moneda_costo,
+            moneda_venta: s.moneda_venta,
+            metodo_pago: s.metodo_pago,
+            id_proveedor: s.id_proveedor,
             detalles: {
                 hotel_nombre: s.hotel_nombre, ciudad: s.ciudad, check_in: s.check_in, check_out: s.check_out, regimen: s.regimen,
                 aerolinea: s.aerolinea, nro_vuelo: s.nro_vuelo, origen: s.origen, destino: s.destino, pnr: s.pnr, fecha: s.excursion_fecha,
@@ -380,8 +439,24 @@ router.put('/:id', async (req, res) => {
             for (let s of servicios) {
                 const d = s.detalles || {};
                 await client.query(
-                    `INSERT INTO reserva_servicios_detallados (id_reserva, tipo_item, costo_neto_operador, venta_bruta_cliente, hotel_nombre, ciudad, check_in, check_out, regimen, aerolinea, nro_vuelo, origen, destino, pnr, plan_asistencia, nro_poliza, cobertura_detalles, pais_destino, nro_tramite, fecha_vencimiento_visa, crucero_nombre, crucero_cabina, crucero_itinerario, nombre_item, servicio_descripcion, excursion_fecha, hora_salida, hora_llegada, operador_mayorista, nro_expediente, observaciones_servicio) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
-                    [id, s.tipo_item, s.costo_neto_operador || 0, s.venta_bruta_cliente || 0, d.hotel_nombre || null, d.ciudad || null, d.check_in || null, d.check_out || null, d.regimen || null, d.aerolinea || null, d.nro_vuelo || null, d.origen || null, d.destino || null, d.pnr || null, d.plan || null, d.nro_poliza || null, d.cobertura || null, d.pais || null, d.nro_tramite || null, d.fecha_vencimiento || null, d.crucero_nombre || null, d.crucero_cabina || null, d.crucero_itinerario || null, d.nombre_servicio || null, d.servicio_descripcion || null, d.fecha || null, d.hora_salida || null, d.hora_llegada || null, d.operador_mayorista || null, d.nro_expediente || null, d.observaciones || null]
+                    `INSERT INTO reserva_servicios_detallados (
+                        id_reserva, tipo_item, costo_neto_operador, venta_bruta_cliente, 
+                        moneda_costo, moneda_venta, metodo_pago, id_proveedor,
+                        hotel_nombre, ciudad, check_in, check_out, regimen, aerolinea, nro_vuelo, origen, destino, pnr, 
+                        plan_asistencia, nro_poliza, cobertura_detalles, pais_destino, nro_tramite, fecha_vencimiento_visa, 
+                        crucero_nombre, crucero_cabina, crucero_itinerario, nombre_item, servicio_descripcion, 
+                        excursion_fecha, hora_salida, hora_llegada, operador_mayorista, nro_expediente, observaciones_servicio
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)`,
+                    [
+                        id, s.tipo_item, s.costo_neto_operador || 0, s.venta_bruta_cliente || 0,
+                        s.moneda_costo || 'USD', s.moneda_venta || 'USD', s.metodo_pago || 'EFECTIVO', s.id_proveedor || null,
+                        d.hotel_nombre || null, d.ciudad || null, d.check_in || null, d.check_out || null, d.regimen || null, 
+                        d.aerolinea || null, d.nro_vuelo || null, d.origen || null, d.destino || null, d.pnr || null, 
+                        d.plan || null, d.nro_poliza || null, d.cobertura || null, d.pais || null, d.nro_tramite || null, d.fecha_vencimiento || null, 
+                        d.crucero_nombre || null, d.crucero_cabina || null, d.crucero_itinerario || null, 
+                        d.nombre_servicio || null, d.servicio_descripcion || null, d.fecha || null, 
+                        d.hora_salida || null, d.hora_llegada || null, d.operador_mayorista || null, d.nro_expediente || null, d.observaciones || null
+                    ]
                 );
             }
         }

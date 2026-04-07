@@ -1,28 +1,26 @@
 const nodemailer = require('nodemailer');
+require('dotenv').config();
 
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false, // false para puerto 587 (StartTLS)
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  port: parseInt(process.env.SMTP_PORT) || 587,
+  secure: false,
   auth: {
-    user: "aguerop47@gmail.com",
-    pass: "dywcncqshpaleulz" // Probá poniéndolas todas juntas sin espacios
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
   },
   tls: {
-    rejectUnauthorized: false // Esto evita problemas si hay algún firewall en tu PC/Red
+    rejectUnauthorized: false
   }
 });
 
-// Esto te va a confirmar en la terminal si funcionó
 transporter.verify((error, success) => {
     if (error) {
-        console.log("❌ Sigue fallando:", error);
+        console.log("❌ Error SMTP:", error.message);
     } else {
-        console.log("✅ ¡VICKA TURISMO ESTÁ LISTO PARA MANDAR MAILS!");
+        console.log(`✅ Mail SMTP listo (${process.env.SMTP_FROM_NAME || 'Traveris Pro'})`);
     }
 });
-
-
 
 module.exports = transporter;
 

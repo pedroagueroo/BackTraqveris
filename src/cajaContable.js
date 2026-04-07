@@ -151,51 +151,89 @@ router.get('/reporte-diario/:empresa', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CIERRE MENSUAL
+// CIERRE MENSUAL — NUEVO: Desglose por billeteras reales
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/cierre-mensual/:empresa', async (req, res) => {
     try {
         const { empresa } = req.params;
         const { mes, anio } = req.query;
 
-        const mesActual = mes || (new Date().getMonth() + 1);
-        const anioActual = anio || new Date().getFullYear();
+        const mesActual = parseInt(mes) || (new Date().getMonth() + 1);
+        const anioActual = parseInt(anio) || new Date().getFullYear();
         const caseMonto = sqlCaseMonto('monto');
 
-        const resumenTipos = await pool.query(`
-            SELECT tipo_movimiento, moneda, COUNT(*) as cantidad,
-                SUM(monto) as monto_bruto, SUM(${caseMonto}) as monto_neto
-            FROM movimientos_caja
-            WHERE empresa_nombre = $1 AND EXTRACT(MONTH FROM fecha_pago) = $2 AND EXTRACT(YEAR FROM fecha_pago) = $3
-            GROUP BY tipo_movimiento, moneda ORDER BY tipo_movimiento
-        `, [empresa, mesActual, anioActual]);
+        // Fecha inicio/fin del periodo
+        const fechaDesde = `${anioActual}-${String(mesActual).padStart(2, '0')}-01`;
+        const ultimoDia = new Date(anioActual, mesActual, 0).getDate();
+        const fechaHasta = `${anioActual}-${String(mesActual).padStart(2, '0')}-${ultimoDia}`;
 
-        const resumenMetodos = await pool.query(`
-            SELECT metodo_pago, moneda, COALESCE(SUM(${caseMonto}), 0) as saldo
-            FROM movimientos_caja
-            WHERE empresa_nombre = $1 AND EXTRACT(MONTH FROM fecha_pago) = $2 AND EXTRACT(YEAR FROM fecha_pago) = $3
-            GROUP BY metodo_pago, moneda ORDER BY metodo_pago
-        `, [empresa, mesActual, anioActual]);
-
-        const totales = await pool.query(`
+        // 1. SALDOS DE CUENTAS: Obtener todas las combinaciones metodo_pago + moneda
+        //    con saldo inicial (antes del periodo), ingresos y egresos del periodo
+        const saldosCuentas = await pool.query(`
             SELECT 
-                COALESCE(SUM(CASE WHEN moneda = 'ARS' THEN (${caseMonto}) ELSE 0 END), 0) as "totalARS",
-                COALESCE(SUM(CASE WHEN moneda = 'USD' THEN (${caseMonto}) ELSE 0 END), 0) as "totalUSD",
-                COUNT(*) as "cantidadMovimientos"
+                metodo_pago, moneda,
+                -- Saldo Inicial: todo lo anterior al periodo
+                COALESCE(SUM(CASE WHEN fecha_pago < $2::date THEN (${caseMonto}) ELSE 0 END), 0) as inicial,
+                -- Ingresos del mes: solo movimientos positivos del periodo  
+                COALESCE(SUM(CASE WHEN fecha_pago >= $2::date AND fecha_pago < ($3::date + INTERVAL '1 day')
+                    AND tipo_movimiento IN ('PAGO_CLIENTE', 'INGRESO', 'CANCELACION_PASIVO_TARJETA') 
+                    THEN monto ELSE 0 END), 0) as ingresos,
+                -- Egresos del mes: solo movimientos negativos del periodo
+                COALESCE(SUM(CASE WHEN fecha_pago >= $2::date AND fecha_pago < ($3::date + INTERVAL '1 day')
+                    AND tipo_movimiento IN ('PAGO_PROVEEDOR', 'EGRESO', 'GASTO', 'EGRESO_PAGO_TARJETA')
+                    THEN monto ELSE 0 END), 0) as egresos,
+                -- Saldo Final
+                COALESCE(SUM(${caseMonto}), 0) as saldo
             FROM movimientos_caja
-            WHERE empresa_nombre = $1 AND EXTRACT(MONTH FROM fecha_pago) = $2 AND EXTRACT(YEAR FROM fecha_pago) = $3
-        `, [empresa, mesActual, anioActual]);
+            WHERE empresa_nombre = $1
+            AND fecha_pago < ($3::date + INTERVAL '1 day')
+            GROUP BY metodo_pago, moneda
+            ORDER BY moneda, metodo_pago
+        `, [empresa, fechaDesde, fechaHasta]);
 
+        // 2. Construir nombres de cuenta legibles
+        const cuentas = saldosCuentas.rows.map(row => {
+            let cuenta = '';
+            if (row.metodo_pago === 'EFECTIVO') {
+                if (row.moneda === 'ARS') cuenta = 'PESOS';
+                else if (row.moneda === 'USD') cuenta = 'DOLARES';
+                else if (row.moneda === 'EUR') cuenta = 'EUROS';
+                else cuenta = 'EFECTIVO ' + row.moneda;
+            } else if (row.metodo_pago === 'TARJETA') {
+                cuenta = 'TARJETAS';
+            } else if (row.metodo_pago === 'TRANSFERENCIA') {
+                cuenta = 'TRANSFERENCIAS ' + row.moneda;
+            } else {
+                cuenta = row.metodo_pago;
+            }
+            return {
+                cuenta,
+                metodo_pago: row.metodo_pago,
+                moneda: row.moneda,
+                inicial: parseFloat(row.inicial),
+                ingresos: parseFloat(row.ingresos),
+                egresos: parseFloat(row.egresos),
+                saldo: parseFloat(row.saldo)
+            };
+        });
+
+        // 3. Totales generales
+        const totalPesos = cuentas.filter(c => c.moneda === 'ARS').reduce((s, c) => s + c.saldo, 0);
+        const totalUSD = cuentas.filter(c => c.moneda === 'USD').reduce((s, c) => s + c.saldo, 0);
+        const totalEUR = cuentas.filter(c => c.moneda === 'EUR').reduce((s, c) => s + c.saldo, 0);
+
+        // 4. Detalle de movimientos del periodo
         const detalle = await pool.query(`
             SELECT m.*, (${caseMonto}) as monto_real, r.destino_final, c.nombre_completo as nombre_titular
             FROM movimientos_caja m
             LEFT JOIN reservas r ON m.id_reserva = r.id AND COALESCE(r.estado_eliminado, FALSE) = FALSE
             LEFT JOIN clientes c ON r.id_titular = c.id
-            WHERE m.empresa_nombre = $1 AND EXTRACT(MONTH FROM m.fecha_pago) = $2 AND EXTRACT(YEAR FROM m.fecha_pago) = $3
-            AND (m.id_reserva IS NULL OR COALESCE(r.estado_eliminado, FALSE) = FALSE)
+            WHERE m.empresa_nombre = $1 
+            AND m.fecha_pago >= $2::date AND m.fecha_pago < ($3::date + INTERVAL '1 day')
             ORDER BY m.fecha_pago ASC
-        `, [empresa, mesActual, anioActual]);
+        `, [empresa, fechaDesde, fechaHasta]);
 
+        // 5. Rentabilidad del periodo
         const rentabilidad = await pool.query(`
             SELECT 
                 COALESCE(SUM(total_venta_final_usd), 0) as "ventasTotales",
@@ -207,9 +245,12 @@ router.get('/cierre-mensual/:empresa', async (req, res) => {
         `, [empresa, mesActual, anioActual]);
 
         res.json({
-            periodo: { mes: parseInt(mesActual), anio: parseInt(anioActual) },
-            empresa, resumenTipos: resumenTipos.rows, resumenMetodos: resumenMetodos.rows,
-            totales: totales.rows[0], rentabilidad: rentabilidad.rows[0], detalle: detalle.rows
+            periodo: { desde: fechaDesde, hasta: fechaHasta, mes: mesActual, anio: anioActual },
+            empresa,
+            saldosCuentas: cuentas,
+            totales: { pesos: totalPesos, monExtranjeraUSD: totalUSD, monExtranjeraEUR: totalEUR },
+            rentabilidad: rentabilidad.rows[0],
+            movimientos: detalle.rows
         });
     } catch (err) {
         console.error("Error en cierre mensual:", err);

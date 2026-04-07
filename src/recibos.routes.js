@@ -207,4 +207,104 @@ router.put('/anular/:id', async (req, res) => {
     }
 });
 
+// ============================================================
+// GENERAR RECIBO PDF (HTML response para imprimir en navegador)
+// ============================================================
+router.get('/pdf/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const recibo = await pool.query(`
+            SELECT r.*, c.nombre_completo, c.dni_pasaporte, c.email, c.cuit_cuil
+            FROM recibos r
+            LEFT JOIN clientes c ON r.id_cliente = c.id
+            WHERE r.id = $1
+        `, [id]);
+
+        if (recibo.rows.length === 0) return res.status(404).json({ error: "Recibo no encontrado" });
+
+        const rec = recibo.rows[0];
+        const fecha = new Date(rec.fecha_emision || rec.fecha).toLocaleDateString('es-AR');
+
+        // Moneda display
+        const simbolo = rec.moneda === 'USD' ? 'US$' : rec.moneda === 'EUR' ? '€' : '$';
+        const montoStr = `${simbolo} ${parseFloat(rec.monto).toFixed(2)}`;
+
+        const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Recibo X #${rec.nro_recibo || rec.id}</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #f8f9fa; padding: 20px; color: #1a1a2e; }
+        .recibo { max-width: 700px; margin: 0 auto; background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); overflow: hidden; }
+        .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; padding: 30px; position: relative; }
+        .header h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: 1px; }
+        .header .nro { font-size: 2.2rem; font-weight: 700; color: #e94560; }
+        .header .empresa { font-size: 1rem; opacity: 0.8; margin-top: 4px; }
+        .header .fecha { position: absolute; top: 30px; right: 30px; text-align: right; font-size: 0.85rem; opacity: 0.75; }
+        .body { padding: 30px; }
+        .field { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
+        .field .label { font-size: 0.75rem; text-transform: uppercase; font-weight: 600; color: #666; letter-spacing: 0.5px; }
+        .field .value { font-weight: 600; text-align: right; }
+        .monto-box { background: linear-gradient(135deg, #e94560, #c62840); color: white; padding: 20px; border-radius: 10px; text-align: center; margin: 20px 0; }
+        .monto-box .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.8; }
+        .monto-box .amount { font-size: 2rem; font-weight: 700; margin-top: 4px; }
+        .footer { padding: 20px 30px; background: #f8f9fa; border-top: 2px dashed #ddd; text-align: center; }
+        .footer .legal { font-size: 0.65rem; color: #999; margin-top: 8px; }
+        .footer .arca { font-size: 0.75rem; color: #e94560; font-weight: 600; }
+        .firmas { display: flex; justify-content: space-between; margin-top: 50px; padding-top: 15px; border-top: 1px solid #ccc; }
+        .firma { text-align: center; width: 45%; }
+        .firma .linea { border-top: 1px solid #333; padding-top: 5px; font-size: 0.7rem; color: #666; }
+        @media print { body { padding: 0; background: white; } .recibo { box-shadow: none; border-radius: 0; } }
+    </style>
+</head>
+<body>
+    <div class="recibo">
+        <div class="header">
+            <h1>RECIBO X</h1>
+            <div class="nro">#${String(rec.nro_recibo || rec.id).padStart(6, '0')}</div>
+            <div class="empresa">${rec.empresa_nombre || 'Traveris Pro'}</div>
+            <div class="fecha">
+                <div>${fecha}</div>
+                <div style="font-size:0.7rem;">Documento No Fiscal</div>
+            </div>
+        </div>
+        <div class="body">
+            <div class="field"><div class="label">Recibí de</div><div class="value">${rec.nombre_completo || '—'}</div></div>
+            <div class="field"><div class="label">DNI / Pasaporte</div><div class="value">${rec.dni_pasaporte || '—'}</div></div>
+            ${rec.cuit_cuil ? `<div class="field"><div class="label">CUIT/CUIL</div><div class="value">${rec.cuit_cuil}</div></div>` : ''}
+            <div class="field"><div class="label">Concepto</div><div class="value">${rec.concepto || rec.observaciones || '—'}</div></div>
+            <div class="field"><div class="label">Método de Pago</div><div class="value">${rec.metodo_pago || '—'}</div></div>
+            ${rec.nro_tarjeta_completo ? `<div class="field"><div class="label">Tarjeta</div><div class="value">**** **** **** ${rec.nro_tarjeta_completo.replace(/\s/g, '').slice(-4)}</div></div>` : ''}
+            ${rec.cuotas && rec.cuotas > 1 ? `<div class="field"><div class="label">Cuotas</div><div class="value">${rec.cuotas} cuotas</div></div>` : ''}
+            
+            <div class="monto-box">
+                <div class="label">Importe Recibido</div>
+                <div class="amount">${montoStr}</div>
+            </div>
+
+            <div class="firmas">
+                <div class="firma"><div class="linea">Firma del Emisor</div></div>
+                <div class="firma"><div class="linea">Firma del Receptor</div></div>
+            </div>
+        </div>
+        <div class="footer">
+            <div class="arca">ARCA — Agencia de Recaudación y Control Aduanero</div>
+            <div class="legal">Este recibo no tiene validez fiscal. Documento interno de control para la empresa ${rec.empresa_nombre || 'Traveris Pro'}. No reemplaza factura electrónica AFIP/ARCA.</div>
+        </div>
+    </div>
+    <script>window.onload = () => window.print();</script>
+</body>
+</html>`;
+
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+    } catch (err) {
+        console.error("Error generando recibo PDF:", err);
+        res.status(500).json({ error: "Error al generar recibo" });
+    }
+});
+
 module.exports = router;

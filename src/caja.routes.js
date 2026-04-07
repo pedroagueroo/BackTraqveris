@@ -159,4 +159,62 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. GESTIÓN DE MÉTODOS DE PAGO: TARJETAS
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/tarjetas/:empresa', async (req, res) => {
+    try {
+        const { empresa } = req.params;
+        const result = await pool.query('SELECT * FROM medios_tarjeta WHERE empresa_nombre = $1 ORDER BY id DESC', [empresa]);
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Error al obtener tarjetas" });
+    }
+});
+
+router.post('/tarjetas', async (req, res) => {
+    const { empresa_nombre, nombre_banco, franquicia, nro_tarjeta_completo, vencimiento } = req.body;
+    try {
+        const result = await pool.query(
+            `INSERT INTO medios_tarjeta (empresa_nombre, nombre_banco, franquicia, nro_tarjeta_completo, vencimiento) 
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [empresa_nombre, nombre_banco, franquicia, nro_tarjeta_completo, vencimiento]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Error al guardar tarjeta" });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. GESTIÓN DE MÉTODOS DE PAGO: TRANSFERENCIAS
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/transferencias/:empresa', async (req, res) => {
+    try {
+        const { empresa } = req.params;
+        const result = await pool.query('SELECT * FROM medios_transferencia WHERE empresa_nombre = $1 ORDER BY id DESC', [empresa]);
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Error al obtener medios de transferencia" });
+    }
+});
+
+router.post('/transferencias', async (req, res) => {
+    const { empresa_nombre, banco_alias, cbu_cvu, titular } = req.body;
+    try {
+        const result = await pool.query(
+            `INSERT INTO medios_transferencia (empresa_nombre, banco_alias, cbu_cvu, titular) 
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [empresa_nombre, banco_alias, cbu_cvu, titular]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Error al guardar medio de transferencia" });
+    }
+});
+
 module.exports = router;
