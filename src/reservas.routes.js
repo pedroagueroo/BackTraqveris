@@ -258,7 +258,12 @@ router.get('/:id', async (req, res) => {
         if (reserva.rows.length === 0) return res.status(404).json({ error: "No existe el legajo" });
         const pasajeros = await pool.query(`SELECT rp.*, c.nombre_completo, c.dni_pasaporte FROM reserva_pasajeros rp JOIN clientes c ON rp.id_cliente = c.id WHERE rp.id_reserva = $1`, [id]);
         const vuelos = await pool.query(`SELECT * FROM reserva_vuelos WHERE id_reserva = $1 ORDER BY fecha_salida`, [id]);
-        const servicios = await pool.query(`SELECT * FROM reserva_servicios_detallados WHERE id_reserva = $1`, [id]);
+        const servicios = await pool.query(`
+            SELECT s.*, p.nombre_comercial as proveedor_nombre 
+            FROM reserva_servicios_detallados s 
+            LEFT JOIN proveedores p ON s.id_proveedor = p.id 
+            WHERE s.id_reserva = $1
+        `, [id]);
         res.json({ ...reserva.rows[0], pasajeros: pasajeros.rows, vuelos: vuelos.rows, servicios_items: servicios.rows });
     } catch (err) {
         res.status(500).json({ error: "Error al obtener el detalle" });
