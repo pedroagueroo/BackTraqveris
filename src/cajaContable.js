@@ -90,11 +90,12 @@ router.get('/balance-billeteras/:empresa', async (req, res) => {
             SELECT 
                 metodo_pago,
                 moneda,
+                banco,
                 COALESCE(SUM(${caseMonto}), 0) as saldo
             FROM movimientos_caja
             WHERE empresa_nombre = $1
-            GROUP BY metodo_pago, moneda
-            ORDER BY metodo_pago, moneda
+            GROUP BY metodo_pago, moneda, banco
+            ORDER BY moneda, metodo_pago, banco
         `;
         const result = await pool.query(query, [empresa]);
         res.json(result.rows);
@@ -114,7 +115,8 @@ router.get('/balance-general/:empresa', async (req, res) => {
         const query = `
             SELECT 
                 COALESCE(SUM(CASE WHEN moneda = 'ARS' THEN (${caseMonto}) ELSE 0 END), 0) as "saldoARS",
-                COALESCE(SUM(CASE WHEN moneda = 'USD' THEN (${caseMonto}) ELSE 0 END), 0) as "saldoUSD"
+                COALESCE(SUM(CASE WHEN moneda = 'USD' THEN (${caseMonto}) ELSE 0 END), 0) as "saldoUSD",
+                COALESCE(SUM(CASE WHEN moneda = 'EUR' THEN (${caseMonto}) ELSE 0 END), 0) as "saldoEUR"
             FROM movimientos_caja
             WHERE empresa_nombre = $1
         `;
@@ -171,7 +173,7 @@ router.get('/cierre-mensual/:empresa', async (req, res) => {
         //    con saldo inicial (antes del periodo), ingresos y egresos del periodo
         const saldosCuentas = await pool.query(`
             SELECT 
-                metodo_pago, moneda,
+                metodo_pago, moneda, banco,
                 -- Saldo Inicial: todo lo anterior al periodo
                 COALESCE(SUM(CASE WHEN fecha_pago < $2::date THEN (${caseMonto}) ELSE 0 END), 0) as inicial,
                 -- Ingresos del mes: solo movimientos positivos del periodo  
@@ -187,28 +189,32 @@ router.get('/cierre-mensual/:empresa', async (req, res) => {
             FROM movimientos_caja
             WHERE empresa_nombre = $1
             AND fecha_pago < ($3::date + INTERVAL '1 day')
-            GROUP BY metodo_pago, moneda
-            ORDER BY moneda, metodo_pago
+            GROUP BY metodo_pago, moneda, banco
+            ORDER BY moneda, metodo_pago, banco
         `, [empresa, fechaDesde, fechaHasta]);
 
         // 2. Construir nombres de cuenta legibles
         const cuentas = saldosCuentas.rows.map(row => {
-            let cuenta = '';
+            let baseName = '';
             if (row.metodo_pago === 'EFECTIVO') {
-                if (row.moneda === 'ARS') cuenta = 'PESOS';
-                else if (row.moneda === 'USD') cuenta = 'DOLARES';
-                else if (row.moneda === 'EUR') cuenta = 'EUROS';
-                else cuenta = 'EFECTIVO ' + row.moneda;
+                if (row.moneda === 'ARS') baseName = 'PESOS';
+                else if (row.moneda === 'USD') baseName = 'DOLARES';
+                else if (row.moneda === 'EUR') baseName = 'EUROS';
+                else baseName = 'EFECTIVO ' + row.moneda;
             } else if (row.metodo_pago === 'TARJETA') {
-                cuenta = 'TARJETAS';
+                baseName = 'TARJETA';
             } else if (row.metodo_pago === 'TRANSFERENCIA') {
-                cuenta = 'TRANSFERENCIAS ' + row.moneda;
+                baseName = 'TRANSF ' + row.moneda;
             } else {
-                cuenta = row.metodo_pago;
+                baseName = row.metodo_pago;
             }
+            
+            const cuenta = row.banco ? `${baseName} - ${row.banco}` : baseName;
+
             return {
                 cuenta,
                 metodo_pago: row.metodo_pago,
+                banco: row.banco,
                 moneda: row.moneda,
                 inicial: parseFloat(row.inicial),
                 ingresos: parseFloat(row.ingresos),
